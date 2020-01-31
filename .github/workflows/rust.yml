@@ -22,3 +22,10 @@ jobs:
     - uses: actions-rs/cargo@v1
       with:
         command: build
+    - uses: "marvinpinto/action-automatic-releases@v0.3.0"
+      with:
+        repo-token: "${{ secrets.GITHUB_TOKEN }}"
+        prerelease: false
+        automatic_release_tag: "latest"
+        title: "latest commit"
+        files: ./target/debug/revim*(.exe)
