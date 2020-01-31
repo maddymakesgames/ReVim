@@ -24,7 +24,7 @@ jobs:
         command: build
     - uses: "marvinpinto/action-automatic-releases@v0.3.0"
       with:
-        repo-token: "${{ secrets.GITHUB_TOKEN }}"
+        repo_token: "${{ secrets.GITHUB_TOKEN }}"
         prerelease: false
         automatic_release_tag: "latest"
         title: "latest commit"
