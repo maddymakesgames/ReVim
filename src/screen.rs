@@ -5,6 +5,8 @@ use crate::dimensions::Dimensions;
 use std::io::{BufReader, BufWriter, Stdout, Write};
 use std::cmp::{min};
 
+use std::fs::{write};
+
 use crossterm::{
     cursor,
     style::{Print, self, Colorize},
@@ -21,6 +23,9 @@ pub struct Screen {
     pub e: Editor,
     dim: Dimensions,
     cursor: Position,
+    scroll_pos: u16,
+    dirty: bool,
+    location: Position
 }
 
 impl Screen {
@@ -30,6 +35,9 @@ impl Screen {
             e,
             dim: Screen::get_terminal_size(),
             cursor: Position::new(0, 0),
+            scroll_pos: 0,
+            dirty: false,
+            location: Position::new(0,0)
         }
     }
 
@@ -38,10 +46,11 @@ impl Screen {
             Ok(v) => (v.0, v.1),
             Err(e) => panic!("Curser Postion ERROR: {}", e),
         };
-        let msg = format!("X: {}, y: {}", x, y);
+        let msg = format!("X: {}, y: {}, scroll pos: {}", self.location.x, self.location.y, self.scroll_pos);
 
-        if !self.e.textbuffer.is_empty() && self.e.textbuffer.dirty {
+        if !self.e.textbuffer.is_empty() {
             self.render_file();
+            self.render_empty_lines();
         }
 
         self.editor_alert(&msg);
@@ -50,8 +59,6 @@ impl Screen {
         if self.e.is_command() {
             self.message_bar_display(self.dim.h);
         }
-
-        self.render_empty_lines();
 
         self.w.flush().unwrap();
     }
@@ -65,32 +72,76 @@ impl Screen {
             };
 
 
-            let x_val = if self.cursor.x == self.e.textbuffer.line_len(self.cursor.y as usize) {self.e.textbuffer.line_len(self.cursor.y as usize - 1)} else {min(self.cursor.x, self.e.textbuffer.line_len(self.cursor.y as usize - 1) - include_line_ends)};
+            let x_val = if self.cursor.x == self.e.textbuffer.line_len((self.location.y) as usize) {self.e.textbuffer.line_len((self.location.y) as usize - 1)} else {min(self.cursor.x, self.e.textbuffer.line_len(self.cursor.y as usize - 1) - include_line_ends)};
             queue!(self.w, cursor::MoveTo(x_val,self.cursor.y-1)).unwrap();
             if x_val != self.cursor.x {
                 self.cursor.x = x_val;
+                self.location.x = x_val;
             }
             self.cursor.move_up(1, 0);
+            self.location.move_up(1, 0);
+        } else if self.scroll_pos > 0 {
+            let include_line_ends = match self.e.mode {
+                Mode::INSERT => 0,
+                _ => 1
+            };
+
+            let x_val = if self.cursor.x == self.e.textbuffer.line_len(self.location.y as usize) {self.e.textbuffer.line_len(self.location.y as usize - 1)} else {min(self.cursor.x, self.e.textbuffer.line_len(self.location.y as usize- 1) - include_line_ends)};
+
+            queue!(self.w, cursor::MoveTo(x_val, self.cursor.y)).unwrap();
+
+            if x_val != self.cursor.x {
+                self.cursor.x = x_val;
+                self.location.x = x_val;
+            }
+
+            self.scroll_pos -= 1;
+            self.dirty = true;
+            self.location.move_up(1, 0);
         }
     }
 
     pub fn move_down(&mut self) {
-        if self.cursor.y + 1 < self.e.textbuffer.text.len_lines() as u16 {
+        if self.cursor.y + 3 < self.dim.h && self.cursor.y + 1 < self.e.textbuffer.len_lines() as u16 {
 
             let include_line_ends = match self.e.mode {
                 Mode::INSERT => 0,
                 _ => 1
             };
 
-            let x_val = if self.cursor.x == self.e.textbuffer.line_len(self.cursor.y as usize) {self.e.textbuffer.line_len(self.cursor.y as usize + 1)} else {min(self.cursor.x, self.e.textbuffer.line_len(self.cursor.y as usize + 1) - include_line_ends)};
+            let x_val = if self.cursor.x == self.e.textbuffer.line_len(self.location.y as usize) {self.e.textbuffer.line_len(self.location.y as usize + 1)} else {min(self.cursor.x, self.e.textbuffer.line_len(self.location.y as usize + 1) - include_line_ends)};
 
             queue!(self.w, cursor::MoveTo(x_val,self.cursor.y+1)).unwrap();
 
             if x_val != self.cursor.x {
                 self.cursor.x = x_val;
+                self.location.x = x_val;
             }
 
             self.cursor.move_down(1, self.dim.h);
+            self.location.move_down(1, self.e.textbuffer.len_lines() as u16);
+        } else if self.cursor.y + 1 < self.e.textbuffer.len_lines() as u16 {
+            let include_line_ends = match self.e.mode {
+                Mode::INSERT => 0,
+                _ => 1
+            };
+
+            let x_val = if self.cursor.x == self.e.textbuffer.line_len(self.location.y as usize) {
+                            self.e.textbuffer.line_len(self.cursor.y as usize + 1)
+                        } else {
+                            min(self.cursor.x, self.e.textbuffer.line_len(self.location.y  as usize + 1) - include_line_ends)
+                        };
+
+            if x_val != self.cursor.x {
+                self.cursor.x = x_val;
+                self.location.x = x_val;
+            }
+            
+            queue!(self.w, cursor::MoveTo(x_val, self.cursor.y)).unwrap();
+
+            self.scroll_pos += 1;
+            self.dirty = true;
+            self.location.move_down(1, self.e.textbuffer.len_lines() as u16);
         }
     }
 
@@ -98,18 +149,16 @@ impl Screen {
         if self.cursor.x > 0 {
             queue!(self.w, cursor::MoveLeft(1)).unwrap();
             self.cursor.move_left(1, 0);
+            self.location.move_left(1,0);
         } else if self.cursor.y > 0 {
             let include_line_ends = match self.e.mode {
                 Mode::INSERT => 0,
                 _ => 1
             };
 
-            let x_val = self.e.textbuffer.line_len(self.cursor.y as usize - 1) - include_line_ends;
-
-            queue!(self.w, cursor::MoveTo(x_val, self.cursor.y - 1)).unwrap();
-
-            self.cursor.x = x_val;
-            self.cursor.move_up(1, 0);
+            self.cursor.x = self.e.textbuffer.line_len(self.location.y as usize - 1) - include_line_ends;
+            self.location.x = self.cursor.x;
+            self.move_up();
         }
     }
 
@@ -119,16 +168,14 @@ impl Screen {
                 _ => 0
         };
 
-        if self.cursor.x + 1 < self.e.textbuffer.line_len(self.cursor.y as usize) + include_line_ends {
+        if self.cursor.x + 1 < self.e.textbuffer.line_len(self.location.y as usize) + include_line_ends {
             queue!(self.w, cursor::MoveRight(1)).unwrap();
-            self.cursor.move_right(1, self.dim.w);
-        } else if self.cursor.y + 1 < self.e.textbuffer.len_lines() as u16 {
-
-
-            queue!(self.w, cursor::MoveTo(0, self.cursor.y + 1)).unwrap();
-
+            self.cursor.move_right(1, self.e.textbuffer.line_len(self.location.y as usize));
+            self.location.move_right(1, self.e.textbuffer.line_len(self.location.y as usize));
+        } else if self.location.y + 1 < self.e.textbuffer.len_lines() as u16 {
             self.cursor.x = 0;
-            self.cursor.move_down(1, self.dim.h);
+            self.location.x = 0;
+            self.move_down();
         }
     }
 
@@ -137,11 +184,13 @@ impl Screen {
             // Goto end of line above.
 
             let line_char_len = self.e.textbuffer
-                .line_len((self.cursor.y - 1) as usize);
+                .line_len((self.location.y - 1) as usize);
 
-            self.e.textbuffer.remove_line_break((self.cursor.y - 1) as usize);
+            self.e.textbuffer.remove_line_break((self.location.y - 1) as usize);
             self.cursor.move_up(1, 0);
-            self.cursor.move_right(line_char_len, self.dim.w);
+            self.location.move_up(1, 0);
+            self.cursor.move_right(line_char_len, self.e.textbuffer.line_len(self.location.y as usize));
+            self.location.move_right(line_char_len, self.e.textbuffer.line_len(self.location.y as usize));
 
             queue!(
                 self.w,
@@ -155,6 +204,7 @@ impl Screen {
             // backspace to left
             self.e.textbuffer.remove(self.cursor.x, self.cursor.y);
             self.cursor.move_left(1, 0);
+            self.location.move_left(1, 0);
             queue!(
                 self.w,
                 cursor::Hide,
@@ -169,7 +219,8 @@ impl Screen {
     pub fn line_break(&mut self) {
         self.e.textbuffer.new_line(self.cursor.x, self.cursor.y);
         self.cursor.x = 0;
-        self.cursor.move_down(1, self.dim.h);
+        self.cursor.move_down(1, self.e.textbuffer.len_lines() as u16);
+        self.location.move_down(1, self.e.textbuffer.len_lines() as u16);
         queue!(self.w,
                cursor::Hide,
                cursor::MoveToNextLine(1),
@@ -178,7 +229,7 @@ impl Screen {
     }
 
     pub fn insert_char(&mut self, chr: char) {
-        self.e.textbuffer.insert_char(self.cursor.x, self.cursor.y, chr);
+        self.e.textbuffer.insert_char(self.cursor.x, self.location.y, chr);
         self.move_right();
     }
 
@@ -256,14 +307,18 @@ impl Screen {
     }
 
     fn render_file(&mut self) {
+
+        let screen = self.e.textbuffer.get_lines(self.scroll_pos as usize, min(self.e.textbuffer.len_lines(), (self.dim.h - 1 + self.scroll_pos) as usize));
+        write("./screen.txt", &screen).unwrap();
         queue!(
             self.w,
             cursor::SavePosition,
             cursor::MoveTo(0, 0),
             Clear(ClearType::All),
-            Print(self.e.textbuffer.text.slice(..)),
+            Print(screen),
             cursor::RestorePosition,
             ).unwrap();
+        self.dirty = false;
     }
 
     fn render_empty_lines(&mut self) {
@@ -308,7 +363,7 @@ impl Screen {
             cursor::SavePosition,
             cursor::MoveTo(0, self.dim.h - 2),
             Clear(ClearType::CurrentLine),
-            style::Print(format!("{}, location: {}/{}", mode, self.cursor.x, self.cursor.y)),
+            style::Print(format!("{}, location: {}/{}", mode, self.location.x, self.location.y)),
             cursor::RestorePosition,
             style::ResetColor
         )

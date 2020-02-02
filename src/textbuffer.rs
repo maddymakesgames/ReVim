@@ -149,4 +149,13 @@ impl TextBuffer {
             false
         }
     }
+
+	pub fn get_lines(&self, start: usize, end: usize) -> String {
+		let lines = self.text.lines_at(start);
+		
+		lines.enumerate().fold(String::new(), |res, (i, ch)| {
+			if i + 1 >= end {return res}
+			res + &format!("{}", ch)
+		})
+	}
 }
